@@ -23,4 +23,10 @@ jobs:
           pip install -r requirements.txt
           playwright install chromium
 
-      - name: Run
+      - name: Run job watcher
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+        run: |
+          python watcher.py
