@@ -1,162 +1,158 @@
 import json
-import time
-import random
 import os
 import sys
-from datetime import datetime
-from playwright.sync_api import sync_playwright
 import requests
-import smtplib
+import time
+from datetime import datetime
 from email.message import EmailMessage
+import smtplib
 
 # --- CONFIGURATION ---
+# These are pulled from your GitHub Secrets
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-
-if not WEBHOOK_URL:
-    print("[!] Error: DISCORD_WEBHOOK_URL not set.")
-    sys.exit(1)
-
-# UPDATED: Using the v2 URL structure seen in your screenshot
-SEARCH_URLS = {
-    "software_engineer": "https://careers.microsoft.com/v2/global/en/home.html?q=software%20engineer",
-    "data_engineer": "https://careers.microsoft.com/v2/global/en/home.html?q=data%20engineer",
-    "data_scientist": "https://careers.microsoft.com/v2/global/en/home.html?q=data%20scientist"
-}
+EMAIL_USER = os.environ.get("EMAIL_USER")
+EMAIL_PASS = os.environ.get("EMAIL_PASS")
 
 DB_FILE = "seen_jobs.json"
-TARGET_TITLES = ["software engineer", "data engineer", "data scientist"]
+
+if not WEBHOOK_URL:
+    print("[!] Error: DISCORD_WEBHOOK_URL not set in environment.")
+    sys.exit(1)
+
+# API Endpoint and search parameters
+API_URL = "https://apply.careers.microsoft.com/api/pcsx/search"
+QUERY_ROLES = ["software engineer", "data engineer", "data scientist"]
 EXCLUDE_TITLES = ["senior", "principal", "manager", "staff", "partner", "director", "intern"]
 
 # ---------------- NOTIFICATIONS ---------------- #
 
 def send_discord_notification(job):
     data = {
-        "content": f"🚨 **NEW MICROSOFT JOB (v2)!** 🚨\n\n"
-                   f"Role: {job['role']}\n"
-                   f"**{job['title']}**\n"
-                   f"Location: {job['location']}\n"
-                   f"[Apply Now]({job['url']})"
+        "embeds": [{
+            "title": "🚨 NEW MICROSOFT JOB FOUND 🚨",
+            "description": f"**{job['title']}**",
+            "color": 3447003, # Blue
+            "fields": [
+                {"name": "Location", "value": job['location'], "inline": True},
+                {"name": "Department", "value": job['department'], "inline": True},
+            ],
+            "url": job['url']
+        }]
     }
     try:
         requests.post(WEBHOOK_URL, json=data)
-        print(f"[-] Discord sent for {job['id']}")
+        print(f"[-] Discord notification sent: {job['id']}")
     except Exception as e:
-        print(f"[!] Discord failed: {e}")
+        print(f"[!] Discord notification failed: {e}")
 
 def send_email_notification(job):
-    EMAIL_ADDRESS = os.environ.get("EMAIL_USER")
-    EMAIL_PASSWORD = os.environ.get("EMAIL_PASS")
-
-    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+    if not EMAIL_USER or not EMAIL_PASS:
         return
 
     msg = EmailMessage()
     msg['Subject'] = f"New Microsoft Job: {job['title']}"
-    msg['From'] = EMAIL_ADDRESS
-    msg['To'] = EMAIL_ADDRESS
-
-    body = f"Role: {job['role']}\nTitle: {job['title']}\nLocation: {job['location']}\nApply Here: {job['url']}"
+    msg['From'] = EMAIL_USER
+    msg['To'] = EMAIL_USER
+    
+    body = (
+        f"Title: {job['title']}\n"
+        f"Location: {job['location']}\n"
+        f"Department: {job['department']}\n"
+        f"Link: {job['url']}\n"
+    )
     msg.set_content(body)
 
     try:
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-            smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            smtp.login(EMAIL_USER, EMAIL_PASS)
             smtp.send_message(msg)
     except Exception as e:
-        print(f"[!] Email failed: {e}")
+        print(f"[!] Email notification failed: {e}")
 
 # ---------------- STORAGE ---------------- #
 
 def load_seen_jobs():
-    if not os.path.exists(DB_FILE): return []
+    """Loads IDs of jobs already processed to avoid duplicate alerts."""
+    if not os.path.exists(DB_FILE):
+        return []
     try:
-        with open(DB_FILE, 'r') as f: return json.load(f)
-    except: return []
+        with open(DB_FILE, 'r') as f:
+            return json.load(f)
+    except:
+        return []
 
 def save_seen_jobs(jobs):
+    """Saves updated list of seen job IDs."""
     with open(DB_FILE, 'w') as f:
         json.dump(jobs, f, indent=2)
 
-def is_target_role(title):
-    t = title.lower()
-    if not any(role in t for role in TARGET_TITLES): return False
-    if any(bad in t for bad in EXCLUDE_TITLES): return False
-    return True
+# ---------------- MAIN LOGIC ---------------- #
 
-# ---------------- SCRAPER ---------------- #
-
-def run_scraper():
+def run_watcher():
     seen_jobs = load_seen_jobs()
-    print(f"[*] Loaded {len(seen_jobs)} seen jobs.")
+    print(f"[*] Starting scan. {len(seen_jobs)} jobs previously seen.")
+    
+    new_found = 0
 
-    with sync_playwright() as p:
-        # Launch with a realistic User Agent to avoid bot detection
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        page = context.new_page()
-
-        for role, url in SEARCH_URLS.items():
-            print(f"\n[*] Checking {role} at {datetime.now().strftime('%H:%M:%S')}")
-
-            try:
-                # 1. Navigate and wait for network to settle
-                page.goto(url, wait_until="networkidle", timeout=60000)
+    for query in QUERY_ROLES:
+        print(f"[*] Querying API for: {query}...")
+        
+        # Parameters based on the API endpoint you discovered
+        params = {
+            "domain": "microsoft.com",
+            "query": query,
+            "location": "United States",
+            "start": 0,
+            "sort_by": "postedTs", # Prioritize the newest postings
+            "filter_include_remote": 1
+        }
+        
+        try:
+            # Masking as a real browser helps prevent being blocked
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://careers.microsoft.com/"
+            }
+            
+            response = requests.get(API_URL, params=params, headers=headers, timeout=15)
+            response.raise_for_status()
+            results = response.json().get("data", {}).get("positions", [])
+            
+            for pos in results:
+                job_id = str(pos.get("id"))
+                title = pos.get("name", "Unknown Title")
                 
-                # 2. Wait specifically for the job list items to appear
-                # The v2 site uses 'div[role="listitem"]' for the job cards
-                job_selector = 'div[role="listitem"]'
-                page.wait_for_selector(job_selector, timeout=20000)
+                # Filter out senior/intern roles
+                title_lower = title.lower()
+                if any(bad in title_lower for bad in EXCLUDE_TITLES):
+                    continue
                 
-                # Small extra sleep to ensure text is rendered
-                time.sleep(3)
+                # Check if we've alerted on this ID before
+                if job_id not in seen_jobs:
+                    job_data = {
+                        "id": job_id,
+                        "title": title,
+                        "location": pos.get("standardizedLocations", ["N/A"])[0],
+                        "department": pos.get("department", "N/A"),
+                        "url": f"https://careers.microsoft.com{pos.get('positionUrl')}"
+                    }
+                    
+                    # Trigger alerts
+                    send_discord_notification(job_data)
+                    send_email_notification(job_data)
+                    
+                    seen_jobs.append(job_id)
+                    new_found += 1
+            
+            # Brief pause to be respectful to the API
+            time.sleep(1)
 
-                job_cards = page.locator(job_selector).all()
-                print(f"[-] Found {len(job_cards)} job cards.")
+        except Exception as e:
+            print(f"[!] Error processing {query}: {e}")
 
-                for card in job_cards[:10]:
-                    try:
-                        # On v2, the title is usually within an <h3> or <a> tag
-                        title_el = card.locator('h3').first
-                        title = title_el.inner_text().strip()
-                        
-                        link_el = card.locator('a[href*="/job/"]').first
-                        relative_link = link_el.get_attribute('href')
-
-                        if not relative_link: continue
-
-                        # Clean up job ID from URL
-                        job_id = relative_link.split('/')[-1]
-                        full_link = f"https://careers.microsoft.com{relative_link}"
-
-                        if not is_target_role(title): continue
-
-                        if job_id not in seen_jobs:
-                            job_data = {
-                                "id": job_id,
-                                "role": role.replace("_", " ").title(),
-                                "title": title,
-                                "location": "Check Listing",
-                                "url": full_link
-                            }
-
-                            send_discord_notification(job_data)
-                            send_email_notification(job_data)
-
-                            seen_jobs.append(job_id)
-                            save_seen_jobs(seen_jobs)
-                            print(f"[+] New job found: {title}")
-
-                    except Exception as e:
-                        continue
-
-            except Exception as e:
-                print(f"[!] Scrape failed for {role}: {e}")
-                # Save a screenshot if it fails so you can see why in GitHub Artifacts
-                page.screenshot(path=f"error_{role}.png")
-
-        browser.close()
+    # Finalize state
+    save_seen_jobs(seen_jobs)
+    print(f"[*] Scan complete. Found {new_found} new roles at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == "__main__":
-    run_scraper()
+    run_watcher()
