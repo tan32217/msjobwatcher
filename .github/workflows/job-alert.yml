@@ -21,7 +21,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          playwright install chromium
+          # The --with-deps flag is critical for Linux runners
+          python -m playwright install chromium --with-deps
 
       - name: Run job watcher
         env:
@@ -30,3 +31,11 @@ jobs:
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
         run: |
           python watcher.py
+
+      - name: Upload Error Screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: "*.png"
+          retention-days: 1
