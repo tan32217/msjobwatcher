@@ -1,7 +1,8 @@
 import json
 import os
-import sys
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import time
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -14,35 +15,30 @@ EMAIL_PASS = os.environ.get("EMAIL_PASS")
 
 DB_FILE = "seen_jobs.json"
 
-if not WEBHOOK_URL:
-    print("[!] Error: DISCORD_WEBHOOK_URL not set in environment.")
-    sys.exit(1)
-
 API_URL = "https://apply.careers.microsoft.com/api/pcsx/search"
 QUERY_ROLES = ["software engineer", "data engineer", "data scientist"]
 EXCLUDE_TITLES = [ "principal", "manager", "staff", "partner", "director", "intern"]
+# Dedupe is done via seen_jobs.json; this window only caps the first run and absorbs GitHub cron delays.
+RECENT_HOURS = 3
+
+# API intermittently answers 429; back off and retry (honors Retry-After).
+session = requests.Session()
+session.mount("https://", HTTPAdapter(max_retries=Retry(total=4, backoff_factor=5, status_forcelist=[429, 500, 502, 503])))
 
 # ---------------- UTILS ---------------- #
 
-def is_recent(posted_date_str):
-    """Checks if a job was posted within the last 60 minutes."""
-    if not posted_date_str:
+def is_recent(posted_ts, now=None):
+    """Checks if a job was posted within the last RECENT_HOURS. API gives Unix seconds, e.g. 1791931454."""
+    if not posted_ts:
         return False
-    try:
-        # Microsoft API uses ISO format: '2024-01-27T10:00:00Z'
-        posted_dt = datetime.fromisoformat(posted_date_str.replace('Z', '+00:00'))
-        now_utc = datetime.now(timezone.utc)
-        
-        diff = now_utc - posted_dt
-        # Return True only if it was posted less than 1 hour ago
-        return diff <= timedelta(hours=1)
-    except Exception as e:
-        print(f"[!] Error parsing date {posted_date_str}: {e}")
-        return False
+    now = now or datetime.now(timezone.utc)
+    return now - datetime.fromtimestamp(posted_ts, timezone.utc) <= timedelta(hours=RECENT_HOURS)
 
 # ---------------- NOTIFICATIONS ---------------- #
 
 def send_discord_notification(job):
+    if not WEBHOOK_URL:
+        return
     data = {
         "embeds": [{
             "title": "🚨 NEW MICROSOFT JOB FOUND 🚨",
@@ -64,6 +60,7 @@ def send_discord_notification(job):
 
 def send_email_notification(job):
     if not EMAIL_USER or not EMAIL_PASS:
+        print("[!] EMAIL_USER/EMAIL_PASS not set, skipping email.")
         return
 
     msg = EmailMessage()
@@ -84,6 +81,7 @@ def send_email_notification(job):
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
             smtp.login(EMAIL_USER, EMAIL_PASS)
             smtp.send_message(msg)
+        print(f"[-] Email sent: {job['id']}")
     except Exception as e:
         print(f"[!] Email notification failed: {e}")
 
@@ -106,7 +104,7 @@ def save_seen_jobs(jobs):
 
 def run_watcher():
     seen_jobs = load_seen_jobs()
-    print(f"[*] Starting scan. {len(seen_jobs)} jobs previously seen. Filter: Last 1 hour.")
+    print(f"[*] Starting scan. {len(seen_jobs)} jobs previously seen. Filter: Last {RECENT_HOURS} hours.")
     
     new_found = 0
 
@@ -118,7 +116,7 @@ def run_watcher():
             "query": query,
             "location": "United States",
             "start": 0,
-            "sort_by": "postedTs", 
+            "sort_by": "timestamp",  # newest first; "postedTs" is silently ignored (falls back to relevance)
             "filter_include_remote": 1
         }
         
@@ -128,14 +126,14 @@ def run_watcher():
                 "Referer": "https://careers.microsoft.com/"
             }
             
-            response = requests.get(API_URL, params=params, headers=headers, timeout=15)
+            response = session.get(API_URL, params=params, headers=headers, timeout=15)
             response.raise_for_status()
             results = response.json().get("data", {}).get("positions", [])
             
             for pos in results:
                 job_id = str(pos.get("id"))
                 title = pos.get("name", "Unknown Title")
-                posted_at = pos.get("postedTs") # The raw timestamp from API
+                posted_at = pos.get("postedTs") # Unix seconds
                 
                 # 1. Filter out senior/intern roles
                 title_lower = title.lower()
@@ -151,10 +149,10 @@ def run_watcher():
                     job_data = {
                         "id": job_id,
                         "title": title,
-                        "location": pos.get("standardizedLocations", ["N/A"])[0],
+                        "location": (pos.get("standardizedLocations") or ["N/A"])[0],
                         "department": pos.get("department", "N/A"),
-                        "url": f"https://careers.microsoft.com{pos.get('positionUrl')}",
-                        "posted_at": posted_at
+                        "url": f"https://apply.careers.microsoft.com{pos.get('positionUrl')}",
+                        "posted_at": datetime.fromtimestamp(posted_at, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
                     }
                     
                     send_discord_notification(job_data)
