@@ -12,6 +12,7 @@ import smtplib
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_PASS = os.environ.get("EMAIL_PASS")
+EMAIL_TO = os.environ.get("EMAIL_TO")  # optional extra recipients, comma-separated
 
 DB_FILE = "seen_jobs.json"
 
@@ -67,6 +68,8 @@ def send_email_notification(job):
     msg['Subject'] = f"New Microsoft Job: {job['title']}"
     msg['From'] = EMAIL_USER
     msg['To'] = EMAIL_USER
+    if EMAIL_TO:
+        msg['Bcc'] = EMAIL_TO  # Bcc so recipients don't see each other's addresses
     
     body = (
         f"Title: {job['title']}\n"
