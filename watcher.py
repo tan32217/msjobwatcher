@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import requests
 from requests.adapters import HTTPAdapter
@@ -13,7 +14,8 @@ import smtplib
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_PASS = os.environ.get("EMAIL_PASS")
-EMAIL_TO = os.environ.get("EMAIL_TO")  # optional extra recipients, comma-separated
+# Optional extra recipients; any separator works (comma, semicolon, space, newline, stray quotes).
+EMAIL_TO = re.findall(r"[^\s,;\"'<>]+@[^\s,;\"'<>]+", os.environ.get("EMAIL_TO") or "")
 
 DB_FILE = "seen_jobs.json"
 
@@ -83,9 +85,7 @@ def send_email_digest(jobs):
     msg = EmailMessage()
     msg['Subject'] = f"{len(jobs)} new Microsoft job{'s' if len(jobs) > 1 else ''}"
     msg['From'] = EMAIL_USER
-    msg['To'] = EMAIL_USER
-    if EMAIL_TO:
-        msg['Bcc'] = EMAIL_TO  # Bcc so recipients don't see each other's addresses
+    msg['To'] = ", ".join([EMAIL_USER] + EMAIL_TO)
     
     body = "\n\n".join(
         f"{job['title']}\n{job['location']} | {job['department']} | posted {job['posted_at']}\n{job['url']}"
@@ -96,8 +96,10 @@ def send_email_digest(jobs):
     try:
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
             smtp.login(EMAIL_USER, EMAIL_PASS)
-            smtp.send_message(msg)
-        print(f"[-] Email sent with {len(jobs)} jobs")
+            refused = smtp.send_message(msg)
+        print(f"[-] Email with {len(jobs)} jobs sent to {1 + len(EMAIL_TO) - len(refused)} of {1 + len(EMAIL_TO)} recipients")
+        if refused:
+            print(f"[!] Gmail refused: {list(refused)}")
         return True
     except Exception as e:
         print(f"[!] Email notification failed: {e}")
