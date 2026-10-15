@@ -19,8 +19,9 @@ DB_FILE = "seen_jobs.json"
 API_URL = "https://apply.careers.microsoft.com/api/pcsx/search"
 QUERY_ROLES = ["software engineer", "data engineer", "data scientist"]
 EXCLUDE_TITLES = [ "principal", "manager", "staff", "partner", "director", "intern"]
-# Dedupe is done via seen_jobs.json; this window only caps the first run and absorbs GitHub cron delays.
-RECENT_HOURS = 3
+# Dedupe is done via seen_jobs.json; this window only has to outlast GitHub cron gaps (observed up to ~10h).
+RECENT_HOURS = 24
+MAX_PAGES = 10  # API returns 10 results per page
 
 # API intermittently answers 429; back off and retry (honors Retry-After).
 session = requests.Session()
@@ -34,6 +35,19 @@ def is_recent(posted_ts, now=None):
         return False
     now = now or datetime.now(timezone.utc)
     return now - datetime.fromtimestamp(posted_ts, timezone.utc) <= timedelta(hours=RECENT_HOURS)
+
+def fetch_recent_positions(params, headers):
+    """Pages through newest-first results until a page ends outside the RECENT_HOURS window."""
+    positions = []
+    for start in range(0, MAX_PAGES * 10, 10):
+        response = session.get(API_URL, params={**params, "start": start}, headers=headers, timeout=15)
+        response.raise_for_status()
+        page = response.json().get("data", {}).get("positions", [])
+        positions += page
+        if not page or not is_recent(page[-1].get("postedTs")):
+            break
+        time.sleep(1)
+    return positions
 
 # ---------------- NOTIFICATIONS ---------------- #
 
@@ -129,9 +143,7 @@ def run_watcher():
                 "Referer": "https://careers.microsoft.com/"
             }
             
-            response = session.get(API_URL, params=params, headers=headers, timeout=15)
-            response.raise_for_status()
-            results = response.json().get("data", {}).get("positions", [])
+            results = fetch_recent_positions(params, headers)
             
             for pos in results:
                 job_id = str(pos.get("id"))
