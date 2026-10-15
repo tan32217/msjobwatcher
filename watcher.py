@@ -14,8 +14,8 @@ import smtplib
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_PASS = os.environ.get("EMAIL_PASS")
-# Optional extra recipients; any separator works (comma, semicolon, space, newline, stray quotes).
-EMAIL_TO = re.findall(r"[^\s,;\"'<>]+@[^\s,;\"'<>]+", os.environ.get("EMAIL_TO") or "")
+# Optional extra recipients. Pull out bare addresses so separators, quotes and brackets in the secret can't break the To header.
+EMAIL_TO = re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", os.environ.get("EMAIL_TO") or "")
 
 DB_FILE = "seen_jobs.json"
 
