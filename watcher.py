@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -73,24 +74,22 @@ def send_discord_notification(job):
     except Exception as e:
         print(f"[!] Discord notification failed: {e}")
 
-def send_email_notification(job):
+def send_email_digest(jobs):
+    """Sends one email listing all new jobs. Returns False only if sending failed."""
     if not EMAIL_USER or not EMAIL_PASS:
         print("[!] EMAIL_USER/EMAIL_PASS not set, skipping email.")
-        return
+        return True
 
     msg = EmailMessage()
-    msg['Subject'] = f"New Microsoft Job: {job['title']}"
+    msg['Subject'] = f"{len(jobs)} new Microsoft job{'s' if len(jobs) > 1 else ''}"
     msg['From'] = EMAIL_USER
     msg['To'] = EMAIL_USER
     if EMAIL_TO:
         msg['Bcc'] = EMAIL_TO  # Bcc so recipients don't see each other's addresses
     
-    body = (
-        f"Title: {job['title']}\n"
-        f"Location: {job['location']}\n"
-        f"Department: {job['department']}\n"
-        f"Posted At: {job['posted_at']}\n"
-        f"Link: {job['url']}\n"
+    body = "\n\n".join(
+        f"{job['title']}\n{job['location']} | {job['department']} | posted {job['posted_at']}\n{job['url']}"
+        for job in sorted(jobs, key=lambda j: j['posted_at'], reverse=True)
     )
     msg.set_content(body)
 
@@ -98,9 +97,11 @@ def send_email_notification(job):
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
             smtp.login(EMAIL_USER, EMAIL_PASS)
             smtp.send_message(msg)
-        print(f"[-] Email sent: {job['id']}")
+        print(f"[-] Email sent with {len(jobs)} jobs")
+        return True
     except Exception as e:
         print(f"[!] Email notification failed: {e}")
+        return False
 
 # ---------------- STORAGE ---------------- #
 
@@ -123,7 +124,7 @@ def run_watcher():
     seen_jobs = load_seen_jobs()
     print(f"[*] Starting scan. {len(seen_jobs)} jobs previously seen. Filter: Last {RECENT_HOURS} hours.")
     
-    new_found = 0
+    new_jobs = []
 
     for query in QUERY_ROLES:
         print(f"[*] Querying API for: {query}...")
@@ -171,18 +172,18 @@ def run_watcher():
                     }
                     
                     send_discord_notification(job_data)
-                    send_email_notification(job_data)
-                    
+                    new_jobs.append(job_data)
                     seen_jobs.append(job_id)
-                    new_found += 1
             
             time.sleep(1)
 
         except Exception as e:
             print(f"[!] Error processing {query}: {e}")
 
+    print(f"[*] Scan complete. Found {len(new_jobs)} new roles at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if new_jobs and not send_email_digest(new_jobs):
+        sys.exit(1)  # fail the run so GitHub alerts you; jobs stay unseen and the next run retries
     save_seen_jobs(seen_jobs)
-    print(f"[*] Scan complete. Found {new_found} new roles at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == "__main__":
     run_watcher()
