@@ -7,6 +7,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from email.message import EmailMessage
 import smtplib
 
@@ -18,6 +19,7 @@ EMAIL_PASS = os.environ.get("EMAIL_PASS")
 EMAIL_TO = re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", os.environ.get("EMAIL_TO") or "")
 
 DB_FILE = "seen_jobs.json"
+PACIFIC = ZoneInfo("America/Los_Angeles")
 
 API_URL = "https://apply.careers.microsoft.com/api/pcsx/search"
 QUERY_ROLES = ["software engineer", "data engineer", "data scientist"]
@@ -89,7 +91,7 @@ def send_email_digest(jobs):
     
     body = "\n\n".join(
         f"{job['title']}\n{job['location']} | {job['department']} | posted {job['posted_at']}\n{job['url']}"
-        for job in sorted(jobs, key=lambda j: j['posted_at'], reverse=True)
+        for job in sorted(jobs, key=lambda j: j['posted_ts'], reverse=True)
     )
     msg.set_content(body)
 
@@ -158,11 +160,15 @@ def run_watcher():
                 if any(bad in title_lower for bad in EXCLUDE_TITLES):
                     continue
                 
-                # 2. Filter by Time (Posted within last hour)
+                # 2. Search is fuzzy ("software engineer" also returns "Hardware Engineer"); require the role in the title
+                if not any(role in title_lower for role in QUERY_ROLES):
+                    continue
+                
+                # 3. Filter by Time (Posted within RECENT_HOURS)
                 if not is_recent(posted_at):
                     continue
                 
-                # 3. Check for duplicates
+                # 4. Check for duplicates
                 if job_id not in seen_jobs:
                     job_data = {
                         "id": job_id,
@@ -170,7 +176,8 @@ def run_watcher():
                         "location": (pos.get("standardizedLocations") or ["N/A"])[0],
                         "department": pos.get("department", "N/A"),
                         "url": f"https://apply.careers.microsoft.com{pos.get('positionUrl')}",
-                        "posted_at": datetime.fromtimestamp(posted_at, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                        "posted_ts": posted_at,
+                        "posted_at": datetime.fromtimestamp(posted_at, PACIFIC).strftime("%b %d, %I:%M %p %Z")
                     }
                     
                     send_discord_notification(job_data)
