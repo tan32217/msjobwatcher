@@ -41,15 +41,15 @@ def is_recent(posted_ts, now=None):
     now = now or datetime.now(timezone.utc)
     return now - datetime.fromtimestamp(posted_ts, timezone.utc) <= timedelta(hours=RECENT_HOURS)
 
-def fetch_recent_positions(params, headers):
-    """Pages through newest-first results until a page ends outside the RECENT_HOURS window."""
+def fetch_recent_positions(params, headers, seen_jobs):
+    """Pages through newest-first results until reaching jobs already seen or older than RECENT_HOURS."""
     positions = []
     for start in range(0, MAX_PAGES * 10, 10):
         response = session.get(API_URL, params={**params, "start": start}, headers=headers, timeout=15)
         response.raise_for_status()
         page = response.json().get("data", {}).get("positions", [])
         positions += page
-        if not page or not is_recent(page[-1].get("postedTs")):
+        if not page or not is_recent(page[-1].get("postedTs")) or any(str(p.get("id")) in seen_jobs for p in page):
             break
         time.sleep(1)
     return positions
@@ -148,7 +148,7 @@ def run_watcher():
                 "Referer": "https://careers.microsoft.com/"
             }
             
-            results = fetch_recent_positions(params, headers)
+            results = fetch_recent_positions(params, headers, seen_jobs)
             
             for pos in results:
                 job_id = str(pos.get("id"))

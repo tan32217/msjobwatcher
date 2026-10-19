@@ -2,7 +2,8 @@ name: Microsoft Job Alert Bot (API)
 
 on:
   schedule:
-    - cron: "7,37 * * * *"  # every 30 min, off the :00/:30 marks GitHub drops most often
+    # Backup only: GitHub runs this a few times a day at best. cron-job.org calls workflow_dispatch every 5 min.
+    - cron: "7,37 * * * *"
   workflow_dispatch:
 
 permissions:
